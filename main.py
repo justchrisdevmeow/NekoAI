@@ -8,7 +8,7 @@ import os
 import sys
 
 # ============================================
-# TRANSFORMER HELPERS (for training only)
+# TRANSFORMER HELPERS
 # ============================================
 
 class TransformerHelpers:
@@ -37,7 +37,7 @@ class TransformerHelpers:
     def generate_synthetic_response(self, user_input):
         prompt = f"User: {user_input}\nBot:"
         try:
-            output = self.generator(prompt, max_length=50, do_sample=True, temperature=0.9)
+            output = self.generator(prompt, max_new_tokens=30, do_sample=True, temperature=0.9)
             response = output[0]['generated_text'].replace(prompt, "").strip()
             if len(response) < 3:
                 response = f"That's interesting about {user_input[:20]}"
@@ -47,18 +47,18 @@ class TransformerHelpers:
 
 
 # ============================================
-# YOUR AI FROM SCRATCH
+# YOUR AI FROM SCRATCH (FIXED SHAPES)
 # ============================================
 
 class YourScratchAI:
-    def __init__(self, embedding_dim=768):
-        # Your neural network weights (from scratch)
-        self.W1 = np.random.randn(embedding_dim, 256) * 0.01
-        self.b1 = np.zeros(256)
-        self.W2 = np.random.randn(256, 256) * 0.01
-        self.b2 = np.zeros(256)
-        self.W3 = np.random.randn(256, embedding_dim) * 0.01
-        self.b3 = np.zeros(embedding_dim)
+    def __init__(self, input_dim=768, hidden_dim=256, output_dim=768):
+        # Neural network weights (correct shapes)
+        self.W1 = np.random.randn(input_dim, hidden_dim) * 0.01
+        self.b1 = np.zeros((1, hidden_dim))
+        self.W2 = np.random.randn(hidden_dim, hidden_dim) * 0.01
+        self.b2 = np.zeros((1, hidden_dim))
+        self.W3 = np.random.randn(hidden_dim, output_dim) * 0.01
+        self.b3 = np.zeros((1, output_dim))
         
         self.lr = 0.005
         self.training_pairs = []
@@ -69,48 +69,67 @@ class YourScratchAI:
         self.load_cache()
         
     def forward(self, x):
-        # Layer 1
+        # x shape: (1, 768) or (768,)
+        if x.ndim == 1:
+            x = x.reshape(1, -1)
+        
+        # Layer 1: (1,768) @ (768,256) = (1,256)
         z1 = np.dot(x, self.W1) + self.b1
         a1 = np.tanh(z1)
-        # Layer 2
+        
+        # Layer 2: (1,256) @ (256,256) = (1,256)
         z2 = np.dot(a1, self.W2) + self.b2
         a2 = np.tanh(z2)
-        # Output
+        
+        # Layer 3: (1,256) @ (256,768) = (1,768)
         z3 = np.dot(a2, self.W3) + self.b3
-        return np.tanh(z3), a2
+        output = np.tanh(z3)
+        
+        return output, a1, a2
     
     def backward(self, x, target, reward=1.0):
-        output, hidden = self.forward(x)
+        if x.ndim == 1:
+            x = x.reshape(1, -1)
+        if target.ndim == 1:
+            target = target.reshape(1, -1)
+        
+        # Forward pass
+        output, a1, a2 = self.forward(x)
+        
+        # Error (scaled by reward)
         error = (output - target) * reward
         
-        # Output layer
-        d_output = error * (1 - output**2)
-        dW3 = np.outer(hidden, d_output)
-        db3 = d_output
+        # Output layer gradient
+        d_output = error * (1 - output**2)  # tanh derivative
+        dW3 = np.dot(a2.T, d_output)
+        db3 = np.sum(d_output, axis=0, keepdims=True)
         
-        # Hidden layer
-        d_hidden = np.dot(d_output, self.W3.T)
-        d_hidden_act = d_hidden * (1 - hidden**2)
-        dW2 = np.outer(x, d_hidden_act)
-        db2 = d_hidden_act
+        # Hidden layer 2 gradient
+        d_a2 = np.dot(d_output, self.W3.T)
+        d_a2_act = d_a2 * (1 - a2**2)
+        dW2 = np.dot(a1.T, d_a2_act)
+        db2 = np.sum(d_a2_act, axis=0, keepdims=True)
         
-        # Input layer
-        z1 = np.dot(x, self.W1) + self.b1
-        a1 = np.tanh(z1)
-        d_input = np.dot(d_hidden_act, self.W2.T)
-        d_input_act = d_input * (1 - a1**2)
-        dW1 = np.outer(x, d_input_act)
-        db1 = d_input_act
+        # Hidden layer 1 gradient
+        d_a1 = np.dot(d_a2_act, self.W2.T)
+        d_a1_act = d_a1 * (1 - a1**2)
+        dW1 = np.dot(x.T, d_a1_act)
+        db1 = np.sum(d_a1_act, axis=0, keepdims=True)
+        
+        # Clip gradients to prevent explosion
+        dW3 = np.clip(dW3, -1, 1)
+        dW2 = np.clip(dW2, -1, 1)
+        dW1 = np.clip(dW1, -1, 1)
         
         # Update weights
-        self.W3 -= self.lr * np.clip(dW3, -1, 1)
-        self.b3 -= self.lr * np.clip(db3, -1, 1)
-        self.W2 -= self.lr * np.clip(dW2, -1, 1)
-        self.b2 -= self.lr * np.clip(db2, -1, 1)
-        self.W1 -= self.lr * np.clip(dW1, -1, 1)
-        self.b1 -= self.lr * np.clip(db1, -1, 1)
+        self.W3 -= self.lr * dW3
+        self.b3 -= self.lr * db3
+        self.W2 -= self.lr * dW2
+        self.b2 -= self.lr * db2
+        self.W1 -= self.lr * dW1
+        self.b1 -= self.lr * db1
         
-        return np.mean(np.abs(error))
+        return float(np.mean(np.abs(error)))
     
     def embedding_to_text(self, embedding):
         emb_hash = tuple(np.round(embedding[:10], 3))
@@ -165,8 +184,8 @@ class YourScratchAI:
         else:
             final_input = user_emb
         
-        predicted_emb, _ = self.forward(final_input)
-        response = self.embedding_to_text(predicted_emb)
+        predicted_emb, _, _ = self.forward(final_input)
+        response = self.embedding_to_text(predicted_emb.flatten())
         
         if len(response) < 15:
             synthetic = self.helpers.generate_synthetic_response(user_input)
@@ -181,11 +200,13 @@ class YourScratchAI:
     
     def pretrain_on_topics(self, topics, iterations_per_topic=10):
         print("Pretraining...")
+        total_losses = []
         for topic in topics:
             for _ in range(iterations_per_topic):
                 synthetic = self.helpers.generate_synthetic_response(topic)
-                self.learn_from_pair(topic, synthetic, reward=0.8)
-        print("Pretraining done.")
+                loss = self.learn_from_pair(topic, synthetic, reward=0.8)
+                total_losses.append(loss)
+        print(f"Pretraining done. Avg loss: {np.mean(total_losses):.4f}")
     
     def save_cache(self):
         with open('bot_memory.pkl', 'wb') as f:
@@ -203,9 +224,12 @@ class YourScratchAI:
                 data = pickle.load(f)
                 self.response_cache = data['cache']
                 self.training_pairs = data['pairs']
-                self.W1 = data['W1']; self.b1 = data['b1']
-                self.W2 = data['W2']; self.b2 = data['b2']
-                self.W3 = data['W3']; self.b3 = data['b3']
+                self.W1 = data['W1']
+                self.b1 = data['b1']
+                self.W2 = data['W2']
+                self.b2 = data['b2']
+                self.W3 = data['W3']
+                self.b3 = data['b3']
                 print(f"Loaded {len(self.response_cache)} cached responses")
     
     def chat(self):
