@@ -1,4 +1,4 @@
-# full_chatbot.py
+# main.py
 import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModel, pipeline
