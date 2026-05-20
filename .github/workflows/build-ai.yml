@@ -1,0 +1,70 @@
+
+name: Train & Chat
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'train or chat'
+        required: true
+        type: choice
+        options:
+          - train
+          - chat
+      message:
+        description: 'Your message (for chat mode)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  chatbot:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    
+    - name: Install dependencies
+      run: |
+        pip install numpy torch transformers
+    
+    - name: Train & commit model
+      if: inputs.mode == 'train'
+      run: |
+        python main.py --train
+        
+        # Commit the trained model
+        git config user.name "GitHub Actions Bot"
+        git config user.email "actions@github.com"
+        git add bot_memory.pkl
+        git commit -m "🤖 Update trained model [skip ci]" || echo "No changes to commit"
+        git push
+    
+    - name: Chat (uses model from repo)
+      if: inputs.mode == 'chat'
+      run: |
+        python -c "
+        from main import YourScratchAI
+        bot = YourScratchAI()
+        msg = '${{ inputs.message }}'
+        response = bot.respond(msg)
+        print(f'🤖: {response}')
+        with open('response.txt', 'w') as f:
+            f.write(response)
+        "
+    
+    - name: Upload response
+      if: inputs.mode == 'chat'
+      uses: actions/upload-artifact@v4
+      with:
+        name: response
+        path: response.txt
